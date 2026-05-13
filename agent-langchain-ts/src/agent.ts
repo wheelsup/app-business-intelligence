@@ -6,10 +6,16 @@
  * - Built-in agentic loop
  * - Streaming support
  * - Standard LangChain message format
+ *
+ * Supports two LLM backends:
+ * - ChatDatabricks (default): Requires Databricks workspace credentials
+ * - ChatOpenAI via LiteLLM (local): Set LITELLM_BASE_URL to use a local LiteLLM proxy
  */
 
 import { ChatDatabricks, DatabricksMCPServer } from "@databricks/langchainjs";
+import { ChatOpenAI } from "@langchain/openai";
 import { BaseMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
+import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { randomUUID } from "crypto";
 import type {
@@ -299,13 +305,62 @@ export class StandardAgent implements AgentInterface {
 }
 
 /**
- * Create a tool-calling agent with ChatDatabricks
+ * Create the chat model based on environment configuration.
+ *
+ * If LITELLM_BASE_URL is set, uses ChatOpenAI pointing at the LiteLLM proxy.
+ * Otherwise, uses ChatDatabricks (requires Databricks workspace credentials).
+ */
+function createChatModel(config: {
+  modelName: string;
+  useResponsesApi: boolean;
+  temperature: number;
+  maxTokens: number;
+}): BaseChatModel {
+  const { modelName, useResponsesApi, temperature, maxTokens } = config;
+
+  const litellmBaseUrl = process.env.LITELLM_BASE_URL;
+
+  if (litellmBaseUrl) {
+    // Local mode: use ChatOpenAI pointed at LiteLLM proxy
+    const litellmModel = process.env.LITELLM_MODEL || modelName;
+    const litellmApiKey = process.env.LITELLM_API_KEY || "not-needed";
+
+    console.log(`🔗 Using LiteLLM proxy at ${litellmBaseUrl}`);
+    console.log(`   Model: ${litellmModel}`);
+
+    return new ChatOpenAI({
+      modelName: litellmModel,
+      temperature,
+      maxTokens,
+      configuration: {
+        baseURL: litellmBaseUrl,
+        apiKey: litellmApiKey,
+      },
+    });
+  }
+
+  // Default: Databricks model serving
+  console.log(`🔗 Using ChatDatabricks`);
+  console.log(`   Model: ${modelName}`);
+
+  return new ChatDatabricks({
+    model: modelName,
+    useResponsesApi,
+    temperature,
+    maxTokens,
+  });
+}
+
+/**
+ * Create a tool-calling agent with ChatDatabricks or LiteLLM
  *
  * Uses standard LangGraph createReactAgent API:
  * - Automatic tool calling and execution
  * - Built-in agentic loop with reasoning
  * - Streaming support out of the box
  * - Compatible with MCP tools
+ *
+ * Set LITELLM_BASE_URL to use a local LiteLLM proxy instead of Databricks.
  *
  * @param config Agent configuration
  * @returns AgentInterface instance
@@ -320,13 +375,8 @@ export async function createAgent(config: AgentConfig = {}): Promise<AgentInterf
     mcpServers,
   } = config;
 
-  // Create chat model
-  const model = new ChatDatabricks({
-    model: modelName,
-    useResponsesApi,
-    temperature,
-    maxTokens,
-  });
+  // Create chat model (LiteLLM or Databricks based on env)
+  const model = createChatModel({ modelName, useResponsesApi, temperature, maxTokens });
 
   // Load tools (basic + MCP if configured)
   const tools = await getAllTools(mcpServers);
