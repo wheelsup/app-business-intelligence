@@ -145,12 +145,11 @@ def query_genie(question: str) -> str:
 
 
 def init_mcp_client(workspace_client: WorkspaceClient) -> DatabricksMultiServerMCPClient:
-    host_name = get_databricks_host_from_env()
     return DatabricksMultiServerMCPClient(
         [
             DatabricksMCPServer(
-                name="system-ai",
-                url=f"{host_name}/api/2.0/mcp/functions/system/ai",
+                name="vector-search",
+                url=VECTOR_SEARCH_MCP_URL,
                 workspace_client=workspace_client,
             ),
         ]
