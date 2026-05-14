@@ -1,6 +1,8 @@
+import json
 import logging
+import os
 from datetime import datetime
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Dict, Optional
 
 import mlflow
 from databricks.sdk import WorkspaceClient
@@ -26,6 +28,11 @@ logger = logging.getLogger(__name__)
 mlflow.langchain.autolog()
 logging.getLogger("mlflow.utils.autologging_utils").setLevel(logging.ERROR)
 sp_workspace_client = WorkspaceClient()
+
+LLM_ENDPOINT_NAME     = os.getenv("LLM_ENDPOINT_NAME", "databricks-claude-opus-4-7")
+GENIE_SPACE_ID        = os.getenv("GENIE_SPACE_ID", "01f148039e131b10b43b6f97295e52e7")
+CONNECTED_TABLE       = os.getenv("CONNECTED_TABLE", "slf_srvc.test_db.reporting_flight")
+VECTOR_SEARCH_MCP_URL = os.getenv("VECTOR_SEARCH_MCP_URL", "")
 
 
 @tool
