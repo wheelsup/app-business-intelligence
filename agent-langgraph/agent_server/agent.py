@@ -186,7 +186,7 @@ async def init_agent(workspace_client: Optional[WorkspaceClient] = None):
                 exc_info=True,
             )
     model = ChatDatabricks(endpoint=LLM_ENDPOINT_NAME)
-    return create_agent(tools=tools, model=model, prompt=SYSTEM_PROMPT)
+    return create_agent(model=model, tools=tools, system_prompt=SYSTEM_PROMPT)
 
 
 @invoke()
