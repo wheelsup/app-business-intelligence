@@ -194,3 +194,5 @@ mlflow.db
 !.claude/skills/long-running-server/
 !.claude/AGENTS.md
 !.claude/CLAUDE.md
+.clinerules/workspace-scope.md
+.clinerules/Reference.md

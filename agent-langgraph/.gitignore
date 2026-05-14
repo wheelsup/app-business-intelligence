@@ -225,3 +225,6 @@ sketch
 **/.env
 **/.env.local
 load-test-runs/
+
+# Ignore all local Markdown files (keep them on local machine only)
+*.md

@@ -27,7 +27,7 @@ resources:
       resources:
         - name: 'experiment'
           experiment:
-            experiment_id: ""
+            experiment_id: "2686038917152841"
             permission: 'CAN_MANAGE'
 
 targets:
