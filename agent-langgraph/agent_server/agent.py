@@ -156,15 +156,37 @@ def init_mcp_client(workspace_client: WorkspaceClient) -> DatabricksMultiServerM
     )
 
 
+SYSTEM_PROMPT = (
+    "You are a business intelligence assistant. "
+    "When a user asks about flight data — such as row counts, aggregates, trends, "
+    "specific records, 'show me…', 'how many…', 'what is the average…', or any "
+    "question that can be answered from the table slf_srvc.test_db.reporting_flight — "
+    "you MUST call the query_genie tool and base your answer on its response. "
+    "When a user asks about policies, glossary terms, definitions, documentation, "
+    "or knowledge-base content — such as 'what does X mean', 'what is the policy for…', "
+    "or any lookup that requires unstructured reference material — you MUST use the "
+    "vector search tool. "
+    "Never invent or fabricate data; if neither tool is appropriate for the question, "
+    "tell the user clearly that you cannot help with that request. "
+    "Never execute SQL directly: all data access must go through query_genie or the "
+    "vector search tool — never through databricks-sql-connector, spark.sql(), or any "
+    "other direct database interface."
+)
+
+
 async def init_agent(workspace_client: Optional[WorkspaceClient] = None):
-    tools = [get_current_time]
-    # To use MCP server tools instead, replace the line above with:
-    #   mcp_client = init_mcp_client(workspace_client or sp_workspace_client)
-    #   try:
-    #       tools.extend(await mcp_client.get_tools())
-    #   except Exception:
-    #       logger.warning("Failed to fetch MCP tools. Continuing without MCP tools.", exc_info=True)
-    return create_agent(tools=tools, model=ChatDatabricks(endpoint="databricks-gpt-5-2"))
+    tools = [get_current_time, query_genie]
+    if VECTOR_SEARCH_MCP_URL:
+        try:
+            mcp_client = init_mcp_client(workspace_client or sp_workspace_client)
+            tools.extend(await mcp_client.get_tools())
+        except Exception:
+            logger.warning(
+                "Vector Search MCP unavailable; continuing without it.",
+                exc_info=True,
+            )
+    model = ChatDatabricks(endpoint=LLM_ENDPOINT_NAME)
+    return create_agent(tools=tools, model=model, prompt=SYSTEM_PROMPT)
 
 
 @invoke()
