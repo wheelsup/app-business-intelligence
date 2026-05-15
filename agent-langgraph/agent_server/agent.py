@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -6,7 +7,7 @@ from typing import Any, AsyncGenerator, Dict, Optional
 
 import mlflow
 from databricks.sdk import WorkspaceClient
-from databricks_langchain import ChatDatabricks, DatabricksMCPServer, DatabricksMultiServerMCPClient
+from databricks_langchain import ChatDatabricks
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 from mlflow.genai.agent_server import invoke, stream
@@ -17,6 +18,7 @@ from mlflow.types.responses import (
     to_chat_completions_input,
 )
 
+from agent_server.agent_logger import AgentLogger
 from agent_server.utils import (
     get_databricks_host_from_env,
     get_session_id,
@@ -29,11 +31,12 @@ mlflow.langchain.autolog()
 logging.getLogger("mlflow.utils.autologging_utils").setLevel(logging.ERROR)
 sp_workspace_client = WorkspaceClient()
 
-LLM_ENDPOINT_NAME     = os.getenv("LLM_ENDPOINT_NAME", "databricks-claude-opus-4-7")
-GENIE_SPACE_ID        = os.getenv("GENIE_SPACE_ID", "01f148039e131b10b43b6f97295e52e7")
-CONNECTED_TABLE       = os.getenv("CONNECTED_TABLE", "slf_srvc.test_db.reporting_flight")
-VECTOR_SEARCH_MCP_URL = os.getenv("VECTOR_SEARCH_MCP_URL", "")
+LLM_ENDPOINT_NAME        = os.getenv("LLM_ENDPOINT_NAME", "databricks-claude-opus-4-7")
+GENIE_SPACE_ID           = os.getenv("GENIE_SPACE_ID", "01f148039e131b10b43b6f97295e52e7")
+CONNECTED_TABLE          = os.getenv("CONNECTED_TABLE", "slf_srvc.test_db.reporting_flight")
+VECTOR_SEARCH_INDEX_NAME = os.getenv("VECTOR_SEARCH_INDEX_NAME", "slf_srvc.test_db.vector_db_knowledge_index")
 
+agent_logger = AgentLogger(workspace_client=sp_workspace_client)
 
 _genie_conversation_cache: Dict[str, str] = {}
 
@@ -63,13 +66,20 @@ def query_genie(question: str) -> str:
     w = sp_workspace_client
     conversation_id = _genie_conversation_cache.get(session_id)
 
+    start = datetime.now()
     try:
         if conversation_id is None:
             message = w.genie.start_conversation_and_wait(GENIE_SPACE_ID, question)
         else:
             message = w.genie.create_message_and_wait(GENIE_SPACE_ID, conversation_id, question)
     except Exception as e:
+        duration_ms = int((datetime.now() - start).total_seconds() * 1000)
         logger.error("Genie call failed: %s", e, exc_info=True)
+        asyncio.create_task(agent_logger.log_tool_call(
+            conversation_id=session_id, activity="Call Genie",
+            tool_input=question, response="",
+            duration_ms=duration_ms, status="error", error_message=str(e),
+        ))
         return json.dumps({"text": f"Genie error: {e}", "sql": "", "dataframe_records": [], "conversation_id": ""})
 
     # Persist conversation id for subsequent turns in this session
@@ -136,24 +146,86 @@ def query_genie(question: str) -> str:
     if not result_text and not result_records:
         result_text = "I wasn't able to generate an answer. Please try rephrasing your question."
 
-    return json.dumps({
+    result_json = {
         "text": result_text,
         "sql": result_sql,
         "dataframe_records": result_records,
         "conversation_id": new_conversation_id,
-    })
+    }
+    
+    duration_ms = int((datetime.now() - start).total_seconds() * 1000)
+    asyncio.create_task(agent_logger.log_tool_call(
+        conversation_id=session_id, activity="Call Genie",
+        tool_input=question, response=result_text,
+        duration_ms=duration_ms, status="success",
+        raw_payload=json.dumps(result_json),
+    ))
+
+    return json.dumps(result_json)
 
 
-def init_mcp_client(workspace_client: WorkspaceClient) -> DatabricksMultiServerMCPClient:
-    return DatabricksMultiServerMCPClient(
-        [
-            DatabricksMCPServer(
-                name="vector-search",
-                url=VECTOR_SEARCH_MCP_URL,
-                workspace_client=workspace_client,
-            ),
-        ]
-    )
+@tool
+def search_business_context(query: str) -> str:
+    """Search the business context knowledge base for column definitions,
+    business rules, glossary terms, and domain knowledge relevant to the query.
+    Always call this BEFORE query_genie for any flight data question so that
+    Genie receives enriched context and generates more accurate SQL.
+    Returns matched context text with traceability IDs."""
+    if not VECTOR_SEARCH_INDEX_NAME:
+        return json.dumps({"context": "", "retrieved_ids": [], "similarity_scores": []})
+
+    try:
+        session_id = get_session_id(None) or "default"
+    except Exception:
+        session_id = "default"
+
+    start = datetime.now()
+    try:
+        vs_index = sp_workspace_client.vector_search_indexes.get_index(VECTOR_SEARCH_INDEX_NAME)
+        results = vs_index.similarity_search(
+            query_text=query,
+            columns=["id", "content", "category", "table_name"],
+            num_results=3,
+        )
+        rows = results.get("result", {}).get("data_array", [])
+        retrieved_ids    = [str(row[0]) for row in rows]   # column 0 = id
+        context_pieces   = [str(row[1]) for row in rows]   # column 1 = content
+        similarity_scores = results.get("result", {}).get("score", [])
+
+        duration_ms = int((datetime.now() - start).total_seconds() * 1000)
+        logger.info("vector_search retrieved ids=%s scores=%s", retrieved_ids, similarity_scores)
+
+        asyncio.create_task(agent_logger.log_tool_call(
+            conversation_id=session_id,
+            activity="Call Vector DB",
+            tool_input=query,
+            response="\n".join(context_pieces)[:2000],
+            duration_ms=duration_ms,
+            status="success",
+            raw_payload=json.dumps(results),
+            retrieved_ids=json.dumps(retrieved_ids),
+            similarity_scores=json.dumps(similarity_scores),
+        ))
+        return json.dumps({
+            "context": "\n".join(context_pieces),
+            "retrieved_ids": retrieved_ids,
+            "similarity_scores": similarity_scores,
+        })
+    except Exception as e:
+        duration_ms = int((datetime.now() - start).total_seconds() * 1000)
+        logger.error("search_business_context failed: %s", e, exc_info=True)
+        asyncio.create_task(agent_logger.log_tool_call(
+            conversation_id=session_id,
+            activity="Call Vector DB",
+            tool_input=query,
+            response="",
+            duration_ms=duration_ms,
+            status="error",
+            error_message=str(e),
+            retrieved_ids=json.dumps([]),
+            similarity_scores=json.dumps([]),
+        ))
+        return json.dumps({"context": "", "retrieved_ids": [], "similarity_scores": []})
 
 
 SYSTEM_PROMPT = (
@@ -175,16 +247,8 @@ SYSTEM_PROMPT = (
 
 
 async def init_agent(workspace_client: Optional[WorkspaceClient] = None):
-    tools = [get_current_time, query_genie]
-    if VECTOR_SEARCH_MCP_URL:
-        try:
-            mcp_client = init_mcp_client(workspace_client or sp_workspace_client)
-            tools.extend(await mcp_client.get_tools())
-        except Exception:
-            logger.warning(
-                "Vector Search MCP unavailable; continuing without it.",
-                exc_info=True,
-            )
+    tools = [get_current_time, search_business_context, query_genie]
+    # search_business_context replaces MCP vector search — no mcp_client needed for vector DB
     model = ChatDatabricks(endpoint=LLM_ENDPOINT_NAME)
     return create_agent(model=model, tools=tools, system_prompt=SYSTEM_PROMPT)
 
@@ -203,8 +267,25 @@ async def invoke_handler(request: ResponsesAgentRequest) -> ResponsesAgentRespon
 async def stream_handler(
     request: ResponsesAgentRequest,
 ) -> AsyncGenerator[ResponsesAgentStreamEvent, None]:
-    if session_id := get_session_id(request):
+    session_id = get_session_id(request) or "unknown"
+    user_id = request.context.user_id if request.context else "unknown"
+    user_prompt = ""  # extracted from last user message in request.input
+    
+    # Extract user prompt from the last user message in request.input
+    if request.input:
+        for msg in reversed(request.input):
+            if msg.role == "user":
+                user_prompt = msg.content if isinstance(msg.content, str) else ""
+                break
+    
+    if session_id != "unknown":
         mlflow.update_current_trace(metadata={"mlflow.trace.session": session_id})
+
+    # Log user request at start
+    await agent_logger.log_user_request(
+        conversation_id=session_id, user_id=user_id,
+        user_prompt=user_prompt, orchestrator_model=LLM_ENDPOINT_NAME,
+    )
 
     # By default, uses service principal credentials.
     # For on-behalf-of user authentication, use get_user_workspace_client() instead:
@@ -212,7 +293,19 @@ async def stream_handler(
     agent = await init_agent()
     messages = {"messages": to_chat_completions_input([i.model_dump() for i in request.input])}
 
+    final_response_text = ""
     async for event in process_agent_astream_events(
         agent.astream(input=messages, stream_mode=["updates", "messages"])
     ):
+        # Capture final response text from output events
+        if event.type == "response.output_item.done" and event.item:
+            if hasattr(event.item, "content"):
+                final_response_text = event.item.content
         yield event
+
+    # Log final response at end
+    await agent_logger.log_final_response(
+        conversation_id=session_id, user_id=user_id,
+        orchestrator_model=LLM_ENDPOINT_NAME,
+        response=final_response_text, status="success",
+    )
