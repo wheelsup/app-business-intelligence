@@ -22,6 +22,14 @@ resources:
             value: "300"
           - name: MLFLOW_EXPERIMENT_ID
             value_from: "experiment"
+          - name: AGENT_LOG_LEVEL
+            value: "off"
+          - name: DEBUG_LOG_TABLE
+            value: "slf_srvc.test_db.agent_debug_log"
+          - name: DEBUG_WAREHOUSE_ID
+            value: ""
+          - name: VECTOR_SEARCH_INDEX_NAME
+            value: "slf_srvc.test_db.vector_db_knowledge_index"
 
       # Resources which this app has access to
       resources:
@@ -29,6 +37,11 @@ resources:
           experiment:
             experiment_id: "2686038917152841"
             permission: 'CAN_MANAGE'
+        - name: 'agent_debug_log'
+          uc_securable:
+            securable_full_name: 'slf_srvc.test_db.agent_debug_log'
+            securable_type: 'TABLE'
+            permission: 'ALL_PRIVILEGES'
 
 targets:
   dev:

@@ -14,3 +14,11 @@ env:
     value: "300"
   - name: MLFLOW_EXPERIMENT_ID
     valueFrom: "experiment"
+  - name: AGENT_LOG_LEVEL
+    value: "off"
+  - name: DEBUG_LOG_TABLE
+    value: "slf_srvc.test_db.agent_debug_log"
+  - name: DEBUG_WAREHOUSE_ID
+    value: ""
+  - name: VECTOR_SEARCH_INDEX_NAME
+    value: "slf_srvc.test_db.vector_db_knowledge_index"
