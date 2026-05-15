@@ -2,13 +2,13 @@
 
 > **Scope:** Edit ONLY `agent_server/agent.py`.
 > **Auto-review:** enabled, commit mode.
-> **Prerequisites:** Phase 2 Part 1 (`answer_flight_question` tool added) and Phase 2 Part 2 (vector-search retriever wired to the new tool) must be committed.
+> **Prerequisites:** Phase 2 Part 1 (`search_business_context` tool added) and Phase 2 Part 2 (vector-search retriever wired to the new tool) must be committed.
 
 ## Goal
 
-Update `SYSTEM_PROMPT` so the model explicitly routes questions to one of three tools — `query_genie`, `answer_flight_question`, and `get_current_time` — and (optionally) drop the now-redundant `VECTOR_SEARCH_MCP_URL` MCP wiring inside `init_agent` if `answer_flight_question` fully replaces it.
+Update `SYSTEM_PROMPT` so the model explicitly routes questions to one of three tools — `query_genie`, `search_business_context`, and `get_current_time` — and (optionally) drop the now-redundant `VECTOR_SEARCH_MCP_URL` MCP wiring inside `init_agent` if `search_business_context` fully replaces it.
 
-The current `SYSTEM_PROMPT` references "the vector search tool" (the MCP-injected tool from Phase 1). After Phase 2, the vector-search retrieval is exposed to the agent as a first-class `@tool` named `answer_flight_question`, so the prompt must name it directly.
+The current `SYSTEM_PROMPT` references "the vector search tool" (the MCP-injected tool from Phase 1). After Phase 2, the vector-search retrieval is exposed to the agent as a first-class `@tool` named `search_business_context`, so the prompt must name it directly.
 
 ## Changes inside `agent_server/agent.py`
 
@@ -29,7 +29,7 @@ SYSTEM_PROMPT = (
     "Always call this tool for data/SQL questions and base your answer on its "
     "response.\n"
     "\n"
-    "2. `answer_flight_question` — use this for any question about POLICIES, "
+    "2. `search_business_context` — use this for any question about POLICIES, "
     "GLOSSARY terms, DEFINITIONS, documentation, or knowledge-base content: "
     "'what does X mean', 'what is the policy for…', 'explain the term…', "
     "'how is <field> defined', or any lookup that requires unstructured "
@@ -45,7 +45,7 @@ SYSTEM_PROMPT = (
     "Do not use `databricks-sql-connector`, `spark.sql()`, or any other direct "
     "database interface.\n"
     "- Never answer policy/glossary/definition questions from your own training "
-    "knowledge — always go through `answer_flight_question` so the answer is "
+    "knowledge — always go through `search_business_context` so the answer is "
     "grounded in the approved knowledge base.\n"
     "- If a question mixes data and policy (e.g. 'how many on-time flights last "
     "month, and what is the on-time policy?'), call both tools and combine the "
@@ -53,22 +53,22 @@ SYSTEM_PROMPT = (
 )
 ```
 
-### 2. (Optional cleanup) Remove the MCP wiring if `answer_flight_question` fully replaces it
+### 2. (Optional cleanup) Remove the MCP wiring if `search_business_context` fully replaces it
 
-If Phase 2 Part 2 confirms `answer_flight_question` is the only knowledge-base path, simplify `init_agent` to a static tool list and drop the `VECTOR_SEARCH_MCP_URL` branch:
+If Phase 2 Part 2 confirms `search_business_context` is the only knowledge-base path, simplify `init_agent` to a static tool list and drop the `VECTOR_SEARCH_MCP_URL` branch:
 
 ```python
 async def init_agent(workspace_client: Optional[WorkspaceClient] = None):
-    tools = [get_current_time, query_genie, answer_flight_question]
+    tools = [get_current_time, query_genie, search_business_context]
     model = ChatDatabricks(endpoint=LLM_ENDPOINT_NAME)
     return create_agent(model=model, tools=tools, system_prompt=SYSTEM_PROMPT)
 ```
 
-If you keep the MCP block as a fallback, leave `init_mcp_client` and the `VECTOR_SEARCH_MCP_URL` env constant in place but ensure `answer_flight_question` is unconditionally added to `tools` first:
+If you keep the MCP block as a fallback, leave `init_mcp_client` and the `VECTOR_SEARCH_MCP_URL` env constant in place but ensure `search_business_context` is unconditionally added to `tools` first:
 
 ```python
 async def init_agent(workspace_client: Optional[WorkspaceClient] = None):
-    tools = [get_current_time, query_genie, answer_flight_question]
+    tools = [get_current_time, query_genie, search_business_context]
     if VECTOR_SEARCH_MCP_URL:
         try:
             mcp_client = init_mcp_client(workspace_client or sp_workspace_client)
@@ -99,19 +99,19 @@ After cleanup, confirm `agent.py` still imports:
 ## What NOT to do in this task
 
 - Do NOT touch any file other than `agent_server/agent.py`.
-- Do NOT change the implementation of `query_genie`, `get_current_time`, or `answer_flight_question`. Phase 2 Parts 1 and 2 own those.
+- Do NOT change the implementation of `query_genie`, `get_current_time`, or `search_business_context`. Phase 2 Parts 1 and 2 own those.
 - Do NOT change the LLM endpoint or the streaming/invoke handlers.
 - Do NOT edit `streamlit-hello-world-app/` or any sibling project.
 - Do NOT add a fourth tool.
 
 ## Acceptance criteria
 
-- `SYSTEM_PROMPT` is the new three-tool routing text shown above, naming `query_genie`, `answer_flight_question`, and `get_current_time` explicitly.
+- `SYSTEM_PROMPT` is the new three-tool routing text shown above, naming `query_genie`, `search_business_context`, and `get_current_time` explicitly.
 - `init_agent`'s `tools` list contains exactly those three tools (or those three plus an optional MCP fallback if you chose the keep-as-fallback variant).
 - If you removed MCP, `VECTOR_SEARCH_MCP_URL`, `init_mcp_client`, and the unused `databricks_langchain` MCP imports are gone, and `python -c "import agent_server.agent"` runs without `NameError` / `ImportError`.
 - File parses without syntax errors (`python -m py_compile agent_server/agent.py`).
 - One commit with the message:
-  `T6: route SYSTEM_PROMPT to query_genie / answer_flight_question / get_current_time and drop MCP wiring`
+  `T6: route SYSTEM_PROMPT to query_genie / search_business_context / get_current_time and drop MCP wiring`
   (Use `…and keep MCP fallback` instead of `…and drop MCP wiring` if you chose the fallback variant.)
 
 ## After this part — manual smoke test
@@ -122,7 +122,7 @@ Phase 2 is complete after this commit. Run a quick 4-question smoke test against
    → Expected: model calls `query_genie`, returns a count grounded in `slf_srvc.test_db.reporting_flight`.
 
 2. **Knowledge-base question** — "What does 'on-time arrival' mean in our policy?"
-   → Expected: model calls `answer_flight_question`, returns the definition from the vector-search index, **not** from training knowledge.
+   → Expected: model calls `search_business_context`, returns the definition from the vector-search index, **not** from training knowledge.
 
 3. **Time question** — "What is the current date?"
    → Expected: model calls `get_current_time` and returns the ISO timestamp.

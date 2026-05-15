@@ -1,4 +1,4 @@
-# Implementation — Phase 2 / Part 1: Create Vector Search Index on `business_context`
+# Implementation — Phase 2 / Part 1: Create Vector Search Index on `vector_db_knowledge`
 
 > **Scope:** Databricks UI or CLI/SDK only. **NO code changes** to `agent-langgraph/`.
 > No edits to `agent_server/agent.py`, `agent_server/app.py`, `requirements.txt`, or any other file in this repo.
@@ -22,30 +22,30 @@ If `ready is True` and `detailed_state` is `ONLINE` / `ONLINE_NO_PENDING_UPDATE`
 
 ## Goal
 
-Create a **Delta Sync Vector Search index** named `slf_srvc.test_db.vector_db_knowledge_index` over the source table `slf_srvc.test_db.business_context`, with `id` as the primary key. The index must be `ONLINE` and return results for a sample query before we wire it into the agent in later parts.
+Create a **Delta Sync Vector Search index** named `slf_srvc.test_db.vector_db_knowledge_index` over the source table `slf_srvc.test_db.vector_db_knowledge`, with `id` as the primary key. The index must be `ONLINE` and return results for a sample query before we wire it into the agent in later parts.
 
 This index is the data backing for the `vector_search` MCP tool the LangGraph agent will call alongside `query_genie`.
 
 ## Source table assumptions
 
-- Table: `slf_srvc.test_db.business_context`
+- Table: `slf_srvc.test_db.vector_db_knowledge`
 - Primary key column: `id` (non-null, unique)
 - Text column to embed: `content` (rename below if your table uses a different column)
 - Change Data Feed (CDF) is enabled on the table (required for Delta Sync indexes). To verify:
   ```sql
-  DESCRIBE TABLE EXTENDED slf_srvc.test_db.business_context;
+  DESCRIBE TABLE EXTENDED slf_srvc.test_db.vector_db_knowledge;
   -- Look for: delta.enableChangeDataFeed = true
   ```
   If not enabled:
   ```sql
-  ALTER TABLE slf_srvc.test_db.business_context
+  ALTER TABLE slf_srvc.test_db.vector_db_knowledge
   SET TBLPROPERTIES (delta.enableChangeDataFeed = true);
   ```
 
 ## Option A — Databricks UI (recommended for one-off creation)
 
 1. Open **Databricks workspace** → left nav → **Catalog**.
-2. Navigate to `slf_srvc` → `test_db` → `business_context`.
+2. Navigate to `slf_srvc` → `test_db` → `vector_db_knowledge`.
 3. Click the **Create** button (top-right of the table page) → **Vector search index**.
    - (Equivalent path on some workspaces: open the table, switch to the **Indexes** tab → **Create vector search index**.)
 4. Fill in the dialog:
@@ -59,7 +59,7 @@ This index is the data backing for the `vector_search` MCP tool the LangGraph ag
      - **Compute embeddings (recommended for first pass):**
        - **Source column:** `content`
        - **Embedding model endpoint:** `databricks-gte-large-en` (or `databricks-bge-large-en`)
-     - **Use pre-computed embeddings** (only if `business_context` already has a vector column):
+     - **Use pre-computed embeddings** (only if `vector_db_knowledge` already has a vector column):
        - **Embedding vector column:** `embedding`
        - **Embedding dimension:** match the model that produced it (e.g. `1024` for `gte-large-en`)
 5. Click **Create**. The index will go through `PROVISIONING` → `ONLINE`. Initial backfill can take a few minutes depending on row count.
@@ -82,7 +82,7 @@ from databricks.sdk.service.vectorsearch import (
 w = WorkspaceClient()
 
 INDEX_NAME    = "slf_srvc.test_db.vector_db_knowledge_index"
-SOURCE_TABLE  = "slf_srvc.test_db.business_context"
+SOURCE_TABLE  = "slf_srvc.test_db.vector_db_knowledge"
 ENDPOINT_NAME = "vs-endpoint-shared"   # <-- replace with your VS endpoint
 PRIMARY_KEY   = "id"
 SOURCE_COLUMN = "content"
@@ -121,7 +121,7 @@ from databricks.sdk.service.vectorsearch import (
 w = WorkspaceClient()
 
 INDEX_NAME    = "slf_srvc.test_db.vector_db_knowledge_index"
-SOURCE_TABLE  = "slf_srvc.test_db.business_context"
+SOURCE_TABLE  = "slf_srvc.test_db.vector_db_knowledge"
 ENDPOINT_NAME = "vs-endpoint-shared"
 PRIMARY_KEY   = "id"
 EMBED_COLUMN  = "embedding"   # existing ARRAY<FLOAT> column on the table
@@ -197,7 +197,7 @@ for row in result.result.data_array or []:
 
 In **Catalog → `slf_srvc.test_db.vector_db_knowledge_index`**, the index page should show:
 - Status: **Online**
-- Source table: `slf_srvc.test_db.business_context`
+- Source table: `slf_srvc.test_db.vector_db_knowledge`
 - Primary key: `id`
 - A **Test query** panel that returns at least one row for a generic question.
 
