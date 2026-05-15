@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any, AsyncGenerator, AsyncIterator, Optional
 
@@ -37,12 +38,16 @@ def get_databricks_host_from_env() -> Optional[str]:
 
 async def process_agent_astream_events(
     async_stream: AsyncIterator[Any],
+    agent_logger=None,
+    conversation_id: Optional[str] = None,
 ) -> AsyncGenerator[ResponsesAgentStreamEvent, None]:
     """
     Generic helper to process agent stream events and yield ResponsesAgentStreamEvent objects.
 
     Args:
         async_stream: The async iterator from agent.astream()
+        agent_logger: Optional AgentLogger instance for logging LLM thinking
+        conversation_id: Optional conversation ID for logging context
     """
     async for event in async_stream:
         if event[0] == "updates":
@@ -57,6 +62,13 @@ async def process_agent_astream_events(
             try:
                 chunk = event[1][0]
                 if isinstance(chunk, AIMessageChunk) and (content := chunk.content):
+                    # Fire async logging task if agent_logger is provided
+                    if agent_logger:
+                        asyncio.create_task(
+                            agent_logger.log_llm_thinking(
+                                conversation_id=conversation_id, orchestrator_model=""
+                            )
+                        )
                     yield ResponsesAgentStreamEvent(
                         **create_text_delta(delta=content, item_id=chunk.id)
                     )
