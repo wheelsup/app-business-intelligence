@@ -64,9 +64,13 @@ async def process_agent_astream_events(
                 if isinstance(chunk, AIMessageChunk) and (content := chunk.content):
                     # Fire async logging task if agent_logger is provided
                     if agent_logger:
+                        # Extract total_tokens from chunk.usage_metadata if available
+                        usage = getattr(chunk, "usage_metadata", None)
+                        total_tokens = (usage.get("total_tokens") if isinstance(usage, dict) else None) if usage else None
                         asyncio.create_task(
                             agent_logger.log_llm_thinking(
-                                conversation_id=conversation_id, orchestrator_model=""
+                                conversation_id=conversation_id, orchestrator_model="",
+                                total_tokens=total_tokens,
                             )
                         )
                     yield ResponsesAgentStreamEvent(

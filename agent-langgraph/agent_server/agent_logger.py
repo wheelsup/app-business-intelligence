@@ -126,6 +126,7 @@ class AgentLogger:
                 "user_prompt": user_prompt,
                 "response": None,
                 "duration_ms": None,
+                "total_tokens": None,
                 "status": "success",
                 "error_message": None,
                 "raw_payload": None,
@@ -189,6 +190,7 @@ class AgentLogger:
                 "user_prompt": user_prompt,
                 "response": response[:2000] if response else None,  # Truncate to 2000 chars
                 "duration_ms": duration_ms,
+                "total_tokens": None,
                 "status": status,
                 "error_message": error_message,
                 "raw_payload": raw_payload,
@@ -201,7 +203,7 @@ class AgentLogger:
             logger.error("Error in log_tool_call: %s", e, exc_info=True)
 
     async def log_llm_thinking(
-        self, conversation_id: str, orchestrator_model: str
+        self, conversation_id: str, orchestrator_model: str, total_tokens: Optional[int] = None
     ) -> None:
         """
         Log LLM thinking activity.
@@ -212,6 +214,7 @@ class AgentLogger:
         Args:
             conversation_id: Chat session UUID
             orchestrator_model: LLM endpoint name
+            total_tokens: Total tokens consumed by the LLM for this activity (input + output)
         """
         if not self._is_enabled("verbose"):
             return
@@ -232,6 +235,7 @@ class AgentLogger:
                 "user_prompt": user_prompt,
                 "response": None,
                 "duration_ms": None,
+                "total_tokens": total_tokens,
                 "status": "success",
                 "error_message": None,
                 "raw_payload": None,
@@ -251,6 +255,7 @@ class AgentLogger:
         response: str,
         status: str,
         error_message: Optional[str] = None,
+        total_tokens: Optional[int] = None,
     ) -> None:
         """
         Log the final response to the user.
@@ -266,6 +271,7 @@ class AgentLogger:
             response: Final response text
             status: 'success' or 'error'
             error_message: Error detail if status='error'
+            total_tokens: Total tokens consumed by the LLM for this activity (input + output)
         """
         if not self._is_enabled("min"):
             return
@@ -290,6 +296,7 @@ class AgentLogger:
                 "user_prompt": user_prompt,
                 "response": response[:2000] if response else None,  # Truncate to 2000 chars
                 "duration_ms": duration_ms,
+                "total_tokens": total_tokens,
                 "status": status,
                 "error_message": error_message,
                 "raw_payload": None,

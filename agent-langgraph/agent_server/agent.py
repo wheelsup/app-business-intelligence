@@ -294,8 +294,11 @@ async def stream_handler(
     messages = {"messages": to_chat_completions_input([i.model_dump() for i in request.input])}
 
     final_response_text = ""
+    total_tokens_used = None
     async for event in process_agent_astream_events(
-        agent.astream(input=messages, stream_mode=["updates", "messages"])
+        agent.astream(input=messages, stream_mode=["updates", "messages"]),
+        agent_logger=agent_logger,
+        conversation_id=session_id,
     ):
         # Capture final response text from output events
         if event.type == "response.output_item.done" and event.item:
@@ -308,4 +311,5 @@ async def stream_handler(
         conversation_id=session_id, user_id=user_id,
         orchestrator_model=LLM_ENDPOINT_NAME,
         response=final_response_text, status="success",
+        total_tokens=total_tokens_used,
     )
