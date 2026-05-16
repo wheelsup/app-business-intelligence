@@ -1,0 +1,58 @@
+# =============================================================================
+# Files & directories EXCLUDED from `databricks bundle deploy`.
+# Mirrors `.gitignore` but is used by the Databricks CLI specifically.
+# Without this file, the bundle would deploy local dev artifacts (huge
+# .venv, local mlflow.db, log files) AND most dangerously, your local
+# .env file — which would override the env vars defined in app.yaml at
+# runtime via load_dotenv(override=True) in start_server.py.
+# =============================================================================
+
+# NEVER deploy local secrets / overrides — production config comes from
+# app.yaml only.
+.env
+.env.*
+!.env.example
+
+# Python virtual environments (huge, platform-specific, regenerated on
+# the runtime via pyproject.toml / uv.lock).
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Local MLflow tracking artifacts. Production uses Databricks MLflow
+# (MLFLOW_TRACKING_URI=databricks).
+mlflow.db
+mlruns/
+
+# Runtime log files written by start_app.py.
+backend.log
+frontend.log
+*.log
+
+# Local test scratch outputs.
+local-run-reports/
+test.txt
+
+# Node.js artifacts in the frontend subdirectory — these get rebuilt on
+# the runtime by `npm install && npm run build`.
+e2e-chatbot-app-next/node_modules/
+e2e-chatbot-app-next/.next/
+e2e-chatbot-app-next/dist/
+
+# OS / editor noise.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Backup / temp files.
+*.bak
+*~
+*.swp

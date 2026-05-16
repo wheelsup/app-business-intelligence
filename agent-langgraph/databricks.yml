@@ -29,11 +29,11 @@ resources:
           - name: CONNECTED_TABLE
             value: "slf_srvc.test_db.reporting_flight"
           - name: AGENT_LOG_LEVEL
-            value: "off"
+            value: "verbose"                            # off | min | verbose
           - name: DEBUG_LOG_TABLE
             value: "slf_srvc.test_db.agent_debug_log"
           - name: DEBUG_WAREHOUSE_ID
-            value: ""
+            value: "24062e246b5e17bf"                   # SQL warehouse used for log inserts
           - name: VECTOR_SEARCH_INDEX_NAME
             value: "slf_srvc.test_db.vector_db_knowledge_index"
 
@@ -48,6 +48,31 @@ resources:
             securable_full_name: 'slf_srvc.test_db.agent_debug_log'
             securable_type: 'TABLE'
             permission: 'ALL_PRIVILEGES'
+        # Warehouse used by agent_logger to INSERT conversation log rows.
+        # Without this grant the SP cannot execute statements against the
+        # warehouse and every log insert silently fails with a permission
+        # error in stdout. Keep the id here in sync with DEBUG_WAREHOUSE_ID
+        # in the env block above.
+        - name: 'debug_warehouse'
+          sql_warehouse:
+            id: '24062e246b5e17bf'
+            permission: 'CAN_USE'
+        # Genie space backing the query_flights_genie tool (see tools.yaml).
+        # Without this grant Genie tool calls return permission errors.
+        # Keep the id here in sync with GENIE_SPACE_ID in the env block above.
+        - name: 'flights_genie'
+          genie_space:
+            space_id: '01f148039e131b10b43b6f97295e52e7'
+            permission: 'CAN_RUN'
+        # Vector index backing search_flights_context (see tools.yaml).
+        # Vector indexes are uc_securable of type TABLE; SELECT is sufficient
+        # for read-only similarity queries. Keep the full name in sync with
+        # VECTOR_SEARCH_INDEX_NAME in the env block above.
+        - name: 'vector_db_knowledge_index'
+          uc_securable:
+            securable_full_name: 'slf_srvc.test_db.vector_db_knowledge_index'
+            securable_type: 'TABLE'
+            permission: 'SELECT'
 
 targets:
   dev:

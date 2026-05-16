@@ -21,10 +21,10 @@ env:
   - name: CONNECTED_TABLE
     value: "slf_srvc.test_db.reporting_flight"
   - name: AGENT_LOG_LEVEL
-    value: "off"
+    value: "verbose"                              # off | min | verbose
   - name: DEBUG_LOG_TABLE
     value: "slf_srvc.test_db.agent_debug_log"
   - name: DEBUG_WAREHOUSE_ID
-    value: ""
+    value: "24062e246b5e17bf"                     # SQL warehouse used for log inserts
   - name: VECTOR_SEARCH_INDEX_NAME
     value: "slf_srvc.test_db.vector_db_knowledge_index"
