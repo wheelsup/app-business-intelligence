@@ -2,7 +2,9 @@ import asyncio
 import json
 import logging
 import os
+from contextvars import ContextVar
 from datetime import datetime
+from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, Optional
 
 import mlflow
@@ -19,6 +21,7 @@ from mlflow.types.responses import (
 )
 
 from agent_server.agent_logger import AgentLogger
+from agent_server.tool_registry import load_tools
 from agent_server.utils import (
     get_databricks_host_from_env,
     get_session_id,
@@ -31,14 +34,23 @@ mlflow.langchain.autolog()
 logging.getLogger("mlflow.utils.autologging_utils").setLevel(logging.ERROR)
 sp_workspace_client = WorkspaceClient()
 
-LLM_ENDPOINT_NAME        = os.getenv("LLM_ENDPOINT_NAME", "databricks-claude-opus-4-7")
-GENIE_SPACE_ID           = os.getenv("GENIE_SPACE_ID", "01f148039e131b10b43b6f97295e52e7")
-CONNECTED_TABLE          = os.getenv("CONNECTED_TABLE", "slf_srvc.test_db.reporting_flight")
-VECTOR_SEARCH_INDEX_NAME = os.getenv("VECTOR_SEARCH_INDEX_NAME", "slf_srvc.test_db.vector_db_knowledge_index")
+LLM_ENDPOINT_NAME = os.getenv("LLM_ENDPOINT_NAME", "databricks-claude-opus-4-7")
+
+# Path to the YAML file that declares which tools the agent has. Tools are
+# defined in tools.yaml at the repo root — see that file's header for the
+# add-a-tool workflow.
+TOOLS_CONFIG_PATH = Path(__file__).parent.parent / "tools.yaml"
 
 agent_logger = AgentLogger(workspace_client=sp_workspace_client)
 
-_genie_conversation_cache: Dict[str, str] = {}
+# Per-turn conversation ID, set by stream_handler at the start of each
+# request. Tools read this via the resolver passed to load_tools() so they
+# know which conversation to log under. ContextVars propagate through
+# asyncio.to_thread, which is how LangChain runs sync tools — so the value
+# set on the event-loop thread becomes visible inside the tool worker.
+_current_session_id: ContextVar[str] = ContextVar(
+    "current_session_id", default="default"
+)
 
 
 @tool
@@ -47,208 +59,38 @@ def get_current_time() -> str:
     return datetime.now().isoformat()
 
 
-@tool
-def query_genie(question: str) -> str:
-    """Query the Genie space for flight data questions against
-    slf_srvc.test_db.reporting_flight. Use for: row counts,
-    aggregates, "show me…", "how many…" type questions.
-    Returns a JSON string with text, sql, dataframe_records, conversation_id.
-    """
-    from mlflow.types.responses import ResponsesAgentRequest  # local import to avoid circular
-
-    # Resolve session id — fall back to a fixed key so the cache still works
-    # when called outside a full request context (e.g. unit tests).
-    try:
-        session_id = get_session_id(None) or "default"
-    except Exception:
-        session_id = "default"
-
-    w = sp_workspace_client
-    conversation_id = _genie_conversation_cache.get(session_id)
-
-    start = datetime.now()
-    try:
-        if conversation_id is None:
-            message = w.genie.start_conversation_and_wait(GENIE_SPACE_ID, question)
-        else:
-            message = w.genie.create_message_and_wait(GENIE_SPACE_ID, conversation_id, question)
-    except Exception as e:
-        duration_ms = int((datetime.now() - start).total_seconds() * 1000)
-        logger.error("Genie call failed: %s", e, exc_info=True)
-        asyncio.create_task(agent_logger.log_tool_call(
-            conversation_id=session_id, activity="Call Genie",
-            tool_input=question, response="",
-            duration_ms=duration_ms, status="error", error_message=str(e),
-        ))
-        return json.dumps({"text": f"Genie error: {e}", "sql": "", "dataframe_records": [], "conversation_id": ""})
-
-    # Persist conversation id for subsequent turns in this session
-    new_conversation_id = getattr(message, "conversation_id", None) or conversation_id or ""
-    if new_conversation_id:
-        _genie_conversation_cache[session_id] = new_conversation_id
-
-    message_id = getattr(message, "message_id", None) or getattr(message, "id", None)
-    attachments = getattr(message, "attachments", None)
-
-    result_text = ""
-    result_sql = ""
-    result_records: list = []
-
-    if attachments:
-        for att in attachments:
-            text_obj = getattr(att, "text", None)
-            if text_obj and getattr(text_obj, "content", None):
-                result_text = text_obj.content
-
-            query_obj = getattr(att, "query", None)
-            if query_obj is not None:
-                sql_str = (
-                    getattr(query_obj, "query", None)
-                    or getattr(query_obj, "statement", None)
-                    or getattr(query_obj, "sql", None)
-                    or getattr(query_obj, "query_text", None)
-                )
-                if sql_str:
-                    result_sql = sql_str
-
-                attachment_id = (
-                    getattr(att, "attachment_id", None)
-                    or getattr(att, "id", None)
-                )
-                if attachment_id and message_id and new_conversation_id:
-                    try:
-                        query_result = None
-                        try:
-                            query_result = w.genie.get_message_attachment_query_result(
-                                space_id=GENIE_SPACE_ID,
-                                conversation_id=new_conversation_id,
-                                message_id=message_id,
-                                attachment_id=attachment_id,
-                            )
-                        except AttributeError:
-                            query_result = w.genie.get_message_query_result(
-                                space_id=GENIE_SPACE_ID,
-                                conversation_id=new_conversation_id,
-                                message_id=message_id,
-                            )
-
-                        if query_result:
-                            sr = getattr(query_result, "statement_response", None)
-                            if sr and sr.result and sr.manifest:
-                                rows = sr.result.data_array or []
-                                cols = [c.name for c in sr.manifest.schema.columns]
-                                result_records = [dict(zip(cols, row)) for row in rows]
-                    except Exception as fe:
-                        logger.warning("Failed to fetch query result: %s", fe, exc_info=True)
-
-    if not result_text and getattr(message, "content", None):
-        result_text = message.content
-    if not result_text and not result_records:
-        result_text = "I wasn't able to generate an answer. Please try rephrasing your question."
-
-    result_json = {
-        "text": result_text,
-        "sql": result_sql,
-        "dataframe_records": result_records,
-        "conversation_id": new_conversation_id,
-    }
-    
-    duration_ms = int((datetime.now() - start).total_seconds() * 1000)
-    asyncio.create_task(agent_logger.log_tool_call(
-        conversation_id=session_id, activity="Call Genie",
-        tool_input=question, response=result_text,
-        duration_ms=duration_ms, status="success",
-        raw_payload=json.dumps(result_json),
-    ))
-
-    return json.dumps(result_json)
-
-
-@tool
-def search_business_context(query: str) -> str:
-    """Search the business context knowledge base for column definitions,
-    business rules, glossary terms, and domain knowledge relevant to the query.
-    Always call this BEFORE query_genie for any flight data question so that
-    Genie receives enriched context and generates more accurate SQL.
-    Returns matched context text with traceability IDs."""
-    if not VECTOR_SEARCH_INDEX_NAME:
-        return json.dumps({"context": "", "retrieved_ids": [], "similarity_scores": []})
-
-    try:
-        session_id = get_session_id(None) or "default"
-    except Exception:
-        session_id = "default"
-
-    start = datetime.now()
-    try:
-        vs_index = sp_workspace_client.vector_search_indexes.get_index(VECTOR_SEARCH_INDEX_NAME)
-        results = vs_index.similarity_search(
-            query_text=query,
-            columns=["id", "content", "category", "table_name"],
-            num_results=3,
-        )
-        rows = results.get("result", {}).get("data_array", [])
-        retrieved_ids    = [str(row[0]) for row in rows]   # column 0 = id
-        context_pieces   = [str(row[1]) for row in rows]   # column 1 = content
-        similarity_scores = results.get("result", {}).get("score", [])
-
-        duration_ms = int((datetime.now() - start).total_seconds() * 1000)
-        logger.info("vector_search retrieved ids=%s scores=%s", retrieved_ids, similarity_scores)
-
-        asyncio.create_task(agent_logger.log_tool_call(
-            conversation_id=session_id,
-            activity="Call Vector DB",
-            tool_input=query,
-            response="\n".join(context_pieces)[:2000],
-            duration_ms=duration_ms,
-            status="success",
-            raw_payload=json.dumps(results),
-            retrieved_ids=json.dumps(retrieved_ids),
-            similarity_scores=json.dumps(similarity_scores),
-        ))
-        return json.dumps({
-            "context": "\n".join(context_pieces),
-            "retrieved_ids": retrieved_ids,
-            "similarity_scores": similarity_scores,
-        })
-    except Exception as e:
-        duration_ms = int((datetime.now() - start).total_seconds() * 1000)
-        logger.error("search_business_context failed: %s", e, exc_info=True)
-        asyncio.create_task(agent_logger.log_tool_call(
-            conversation_id=session_id,
-            activity="Call Vector DB",
-            tool_input=query,
-            response="",
-            duration_ms=duration_ms,
-            status="error",
-            error_message=str(e),
-            retrieved_ids=json.dumps([]),
-            similarity_scores=json.dumps([]),
-        ))
-        return json.dumps({"context": "", "retrieved_ids": [], "similarity_scores": []})
+# Load all data-source tools once at startup from tools.yaml. Adding a new
+# tool of an existing backend type = edit YAML + restart. Adding a new
+# backend type = create agent_server/backends/<name>.py and register it in
+# tool_registry.BACKEND_HANDLERS.
+_LOADED_TOOLS = load_tools(
+    config_path=TOOLS_CONFIG_PATH,
+    agent_logger=agent_logger,
+    workspace_client=sp_workspace_client,
+    session_id_resolver=lambda: _current_session_id.get(),
+)
 
 
 SYSTEM_PROMPT = (
-    "You are a business intelligence assistant. "
-    "When a user asks about flight data — such as row counts, aggregates, trends, "
-    "specific records, 'show me…', 'how many…', 'what is the average…', or any "
-    "question that can be answered from the table slf_srvc.test_db.reporting_flight — "
-    "you MUST call the query_genie tool and base your answer on its response. "
-    "When a user asks about policies, glossary terms, definitions, documentation, "
-    "or knowledge-base content — such as 'what does X mean', 'what is the policy for…', "
-    "or any lookup that requires unstructured reference material — you MUST use the "
-    "vector search tool. "
-    "Never invent or fabricate data; if neither tool is appropriate for the question, "
-    "tell the user clearly that you cannot help with that request. "
-    "Never execute SQL directly: all data access must go through query_genie or the "
-    "vector search tool — never through databricks-sql-connector, spark.sql(), or any "
-    "other direct database interface."
+    "You are a business intelligence assistant for the company. "
+    "You help employees by calling the appropriate tool from the toolset "
+    "available to you. Each tool's description explains what data source it "
+    "covers and when to use it — read those descriptions carefully and pick "
+    "the most appropriate tool(s) for the user's question. Multiple tools "
+    "may be relevant for one question; call them as needed and combine "
+    "their results. "
+    "If no available tool fits the question, tell the user clearly that "
+    "you cannot help with that request — do NOT invent, guess, or "
+    "fabricate data. "
+    "Never bypass the tools by writing or executing SQL directly, calling "
+    "external APIs, or accessing data systems outside the provided tools."
 )
 
 
 async def init_agent(workspace_client: Optional[WorkspaceClient] = None):
-    tools = [get_current_time, search_business_context, query_genie]
-    # search_business_context replaces MCP vector search — no mcp_client needed for vector DB
+    # get_current_time stays hardcoded since it's a trivial utility, not a
+    # data-source tool. Everything else comes from tools.yaml.
+    tools = [get_current_time, *_LOADED_TOOLS]
     model = ChatDatabricks(endpoint=LLM_ENDPOINT_NAME)
     return create_agent(model=model, tools=tools, system_prompt=SYSTEM_PROMPT)
 
@@ -270,16 +112,50 @@ async def stream_handler(
     session_id = get_session_id(request) or "unknown"
     user_id = request.context.user_id if request.context else "unknown"
     user_prompt = ""  # extracted from last user message in request.input
-    
-    # Extract user prompt from the last user message in request.input
+
+    # Extract user prompt from the last user message in request.input.
+    # request.input items are Pydantic objects of various Responses-API
+    # subtypes; the safest path is to .model_dump() each one and inspect the
+    # resulting dict. Content may be a string or a list of {type, text} items.
+    def _extract_text(content) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    t = item.get("text") or item.get("content")
+                    if isinstance(t, str):
+                        parts.append(t)
+                elif isinstance(item, str):
+                    parts.append(item)
+            return "".join(parts)
+        if isinstance(content, dict):
+            t = content.get("text") or content.get("content")
+            return t if isinstance(t, str) else ""
+        return ""
+
     if request.input:
         for msg in reversed(request.input):
-            if msg.role == "user":
-                user_prompt = msg.content if isinstance(msg.content, str) else ""
-                break
+            try:
+                msg_dict = msg.model_dump() if hasattr(msg, "model_dump") else (
+                    msg if isinstance(msg, dict) else {}
+                )
+            except Exception:
+                msg_dict = {}
+            if msg_dict.get("role") == "user":
+                user_prompt = _extract_text(msg_dict.get("content"))
+                if user_prompt:
+                    break
     
     if session_id != "unknown":
         mlflow.update_current_trace(metadata={"mlflow.trace.session": session_id})
+
+    # Make the session id visible to sync @tool functions (which run in
+    # worker threads via LangChain's asyncio.to_thread). Setting on the
+    # event-loop thread; the ContextVar value propagates across to_thread
+    # automatically per Python's contextvars / asyncio semantics.
+    _current_session_id.set(session_id)
 
     # Log user request at start
     await agent_logger.log_user_request(
@@ -294,22 +170,54 @@ async def stream_handler(
     messages = {"messages": to_chat_completions_input([i.model_dump() for i in request.input])}
 
     final_response_text = ""
-    total_tokens_used = None
-    async for event in process_agent_astream_events(
-        agent.astream(input=messages, stream_mode=["updates", "messages"]),
-        agent_logger=agent_logger,
-        conversation_id=session_id,
-    ):
-        # Capture final response text from output events
-        if event.type == "response.output_item.done" and event.item:
-            if hasattr(event.item, "content"):
-                final_response_text = event.item.content
-        yield event
-
-    # Log final response at end
-    await agent_logger.log_final_response(
-        conversation_id=session_id, user_id=user_id,
-        orchestrator_model=LLM_ENDPOINT_NAME,
-        response=final_response_text, status="success",
-        total_tokens=total_tokens_used,
-    )
+    final_status = "success"
+    final_error: Optional[str] = None
+    # Mutable dict that process_agent_astream_events fills with per-turn stats
+    # (running total_tokens, last LLM Thinking chunk id for dedup, ...)
+    turn_stats: Dict[str, Any] = {}
+    try:
+        async for event in process_agent_astream_events(
+            agent.astream(input=messages, stream_mode=["updates", "messages"]),
+            agent_logger=agent_logger,
+            conversation_id=session_id,
+            orchestrator_model=LLM_ENDPOINT_NAME,
+            stats=turn_stats,
+        ):
+            # Accumulate the final response text from streamed delta events.
+            # The Responses API streams the answer as many
+            # `response.output_text.delta` events each carrying a `delta`
+            # chunk. The `response.output_item.done` event arrives at the
+            # end with `content=None` — the protocol expects the consumer
+            # to reconstruct the full text from the deltas.
+            etype = getattr(event, "type", "")
+            if etype == "response.output_text.delta":
+                ed: Dict[str, Any] = {}
+                try:
+                    if hasattr(event, "model_dump"):
+                        ed = event.model_dump()
+                except Exception:
+                    ed = {}
+                delta = ed.get("delta") if isinstance(ed, dict) else None
+                if delta is None:
+                    delta = getattr(event, "delta", None)
+                if isinstance(delta, str):
+                    final_response_text += delta
+                elif isinstance(delta, dict):
+                    t = delta.get("text")
+                    if isinstance(t, str):
+                        final_response_text += t
+            yield event
+    except Exception as e:
+        final_status = "error"
+        final_error = str(e)
+        logger.exception("stream_handler failed: %s", e)
+        raise
+    finally:
+        # Guarantee Final Response row even on early cancellation / exception
+        await agent_logger.log_final_response(
+            conversation_id=session_id, user_id=user_id,
+            orchestrator_model=LLM_ENDPOINT_NAME,
+            response=final_response_text, status=final_status,
+            error_message=final_error,
+            total_tokens=turn_stats.get("total_tokens"),
+        )

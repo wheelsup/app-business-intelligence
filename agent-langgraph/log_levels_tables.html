@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>System Conversation Logging - Log Levels</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            min-height: 100vh;
+            padding: 40px 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.1);
+            padding: 40px;
+        }
+
+        h2 {
+            color: #1f2937;
+            font-size: 28px;
+            margin-bottom: 32px;
+            font-weight: 700;
+            border-bottom: 3px solid #3b82f6;
+            padding-bottom: 12px;
+        }
+
+        h3 {
+            color: #374151;
+            font-size: 16px;
+            margin-top: 32px;
+            margin-bottom: 16px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Log Levels Table */
+        .table-wrapper {
+            margin-bottom: 40px;
+            overflow-x: auto;
+            border-radius: 8px;
+            border: 1px solid #e5e7eb;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        thead {
+            background: linear-gradient(135deg, #34495e 0%, #2c3e50 100%);
+            color: white;
+            font-weight: 600;
+        }
+
+        th {
+            padding: 16px 20px;
+            text-align: left;
+            font-size: 13px;
+            letter-spacing: 0.3px;
+            text-transform: uppercase;
+            border-right: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        th:last-child {
+            border-right: none;
+        }
+
+        tbody tr {
+            border-bottom: 1px solid #e5e7eb;
+            transition: background-color 0.2s ease;
+        }
+
+        tbody tr:hover {
+            background-color: #f9fafb;
+        }
+
+        tbody tr:last-child {
+            border-bottom: none;
+        }
+
+        td {
+            padding: 16px 20px;
+            color: #4b5563;
+            line-height: 1.6;
+        }
+
+        /* Log levels table specific styling */
+        .level-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .level-off {
+            background-color: #fee;
+            color: #991b1b;
+        }
+
+        .level-min {
+            background-color: #fef3c7;
+            color: #92400e;
+        }
+
+        .level-verbose {
+            background-color: #dbeafe;
+            color: #1e40af;
+        }
+
+        .use-case {
+            font-weight: 500;
+            color: #1f2937;
+        }
+
+        .detail {
+            color: #6b7280;
+            line-height: 1.7;
+        }
+
+        /* Activity Coverage Table */
+        .activity-name {
+            font-weight: 500;
+            color: #1f2937;
+            min-width: 140px;
+        }
+
+        .status-yes {
+            color: #059669;
+            font-weight: 600;
+        }
+
+        .status-no {
+            color: #dc2626;
+            font-weight: 600;
+        }
+
+        .status-yes::before {
+            content: "✓ ";
+        }
+
+        .status-no::before {
+            content: "✗ ";
+        }
+
+        /* Responsive Design */
+        @media (max-width: 768px) {
+            .container {
+                padding: 20px;
+            }
+
+            h2 {
+                font-size: 22px;
+                margin-bottom: 24px;
+            }
+
+            th, td {
+                padding: 12px 8px;
+                font-size: 12px;
+            }
+
+            .level-badge {
+                padding: 3px 8px;
+                font-size: 10px;
+            }
+
+            .detail {
+                font-size: 13px;
+            }
+        }
+
+        /* Legend */
+        .legend {
+            margin-top: 24px;
+            padding: 16px;
+            background-color: #f0f9ff;
+            border-left: 4px solid #3b82f6;
+            border-radius: 4px;
+            font-size: 13px;
+            color: #1e3a8a;
+        }
+
+        .legend-item {
+            margin-bottom: 8px;
+        }
+
+        .legend-item:last-child {
+            margin-bottom: 0;
+        }
+
+        .legend-item strong {
+            color: #1f2937;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>2. The Three Log Levels</h2>
+
+        <!-- Log Levels Table -->
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Level</th>
+                        <th>When to Use</th>
+                        <th>Detail Level</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><span class="level-badge level-off">OFF</span></td>
+                        <td class="use-case">Production (Default)</td>
+                        <td class="detail">Nothing is written. Zero overhead, zero latency impact.</td>
+                    </tr>
+                    <tr>
+                        <td><span class="level-badge level-min">MIN</span></td>
+                        <td class="use-case">Business Audit</td>
+                        <td class="detail">2 rows per turn: user question + final answer with end-to-end duration.</td>
+                    </tr>
+                    <tr>
+                        <td><span class="level-badge level-verbose">VERBOSE</span></td>
+                        <td class="use-case">Engineering Debug</td>
+                        <td class="detail">Every activity row — full chain of thought with per-step timing and raw payloads.</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Activity Coverage Table -->
+        <h3>Activity Coverage by Level</h3>
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Activity</th>
+                        <th>OFF</th>
+                        <th>MIN</th>
+                        <th>VERBOSE</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td class="activity-name">User Request</td>
+                        <td><span class="status-no"></span></td>
+                        <td><span class="status-yes"></span></td>
+                        <td><span class="status-yes"></span></td>
+                    </tr>
+                    <tr>
+                        <td class="activity-name">LLM Thinking</td>
+                        <td><span class="status-no"></span></td>
+                        <td><span class="status-no"></span></td>
+                        <td><span class="status-yes"></span></td>
+                    </tr>
+                    <tr>
+                        <td class="activity-name">Call Genie</td>
+                        <td><span class="status-no"></span></td>
+                        <td><span class="status-no"></span></td>
+                        <td><span class="status-yes"></span></td>
+                    </tr>
+                    <tr>
+                        <td class="activity-name">Call Vector DB</td>
+                        <td><span class="status-no"></span></td>
+                        <td><span class="status-no"></span></td>
+                        <td><span class="status-yes"></span></td>
+                    </tr>
+                    <tr>
+                        <td class="activity-name">Call Copilot</td>
+                        <td><span class="status-no"></span></td>
+                        <td><span class="status-no"></span></td>
+                        <td><span class="status-yes"></span></td>
+                    </tr>
+                    <tr>
+                        <td class="activity-name">Final Response</td>
+                        <td><span class="status-no"></span></td>
+                        <td><span class="status-yes"></span></td>
+                        <td><span class="status-yes"></span></td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Legend -->
+        <div class="legend">
+            <div class="legend-item"><strong>Log Level Guide:</strong></div>
+            <div class="legend-item">• <strong>OFF</strong> — Maximum speed, no logging overhead. Recommended for production.</div>
+            <div class="legend-item">• <strong>MIN</strong> — Track user questions and final answers only. Good for usage analytics and auditing.</div>
+            <div class="legend-item">• <strong>VERBOSE</strong> — Full debug mode. Captures every tool call, LLM step, and response timing.</div>
+        </div>
+    </div>
+</body>
+</html>

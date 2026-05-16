@@ -12,6 +12,8 @@ import asyncio
 import json
 import logging
 import os
+import sys
+import threading
 from datetime import datetime
 from typing import Any, Dict, Optional
 
@@ -61,11 +63,23 @@ class AgentLogger:
         self._turn_counter: Dict[str, int] = {}
         self._request_start: Dict[str, datetime] = {}
         self._user_prompt_cache: Dict[str, str] = {}
+        # Cache user_id and orchestrator_model per conversation so subsequent
+        # rows (LLM Thinking, tool calls) don't have to relookup or fall back
+        # to "unknown".
+        self._user_id_cache: Dict[str, str] = {}
+        self._orchestrator_model_cache: Dict[str, str] = {}
 
         logger.info(
             "AgentLogger initialized: level=%s, table=%s",
             self.log_level_name,
             self.debug_log_table,
+        )
+        # Also print to stderr (unbuffered) so it's visible regardless of logging config
+        print(
+            f"[AgentLogger] initialized: level={self.log_level_name}, "
+            f"table={self.debug_log_table}, warehouse_id={'set' if self.debug_warehouse_id else 'EMPTY'}",
+            file=sys.stderr,
+            flush=True,
         )
 
     def _is_enabled(self, min_level: str) -> bool:
@@ -110,9 +124,11 @@ class AgentLogger:
                 self._turn_counter[conversation_id] = 0
             self._turn_counter[conversation_id] += 1
 
-            # Record start time and cache prompt
+            # Record start time and cache prompt + identity for later rows
             self._request_start[conversation_id] = datetime.utcnow()
             self._user_prompt_cache[conversation_id] = user_prompt
+            self._user_id_cache[conversation_id] = user_id
+            self._orchestrator_model_cache[conversation_id] = orchestrator_model
 
             session_turn = self._turn_counter[conversation_id]
 
@@ -174,9 +190,9 @@ class AgentLogger:
             return
 
         try:
-            # Get cached values
-            user_id = "unknown"
-            orchestrator_model = "unknown"
+            # Get cached values populated by log_user_request
+            user_id = self._user_id_cache.get(conversation_id, "unknown")
+            orchestrator_model = self._orchestrator_model_cache.get(conversation_id, "unknown")
             session_turn = self._turn_counter.get(conversation_id, 0)
             user_prompt = self._user_prompt_cache.get(conversation_id, "")
 
@@ -202,6 +218,35 @@ class AgentLogger:
         except Exception as e:
             logger.error("Error in log_tool_call: %s", e, exc_info=True)
 
+    def log_tool_call_threadsafe(self, **kwargs) -> None:
+        """
+        Thread-safe fire-and-forget wrapper around log_tool_call.
+
+        LangChain runs sync @tool functions in a worker thread via
+        asyncio.to_thread; that thread has no running event loop, so
+        `asyncio.create_task(...)` raises RuntimeError ("no running event
+        loop"). This helper spawns a dedicated daemon thread that owns a
+        fresh asyncio loop and runs the async log_tool_call to completion.
+
+        Safe to call from:
+        - sync @tool functions (worker thread, no loop)
+        - the main asyncio loop (still works — just slightly less efficient
+          than create_task because it spins up a thread)
+        """
+        if not self._is_enabled("verbose"):
+            return
+
+        def _run() -> None:
+            try:
+                asyncio.run(self.log_tool_call(**kwargs))
+            except Exception as e:
+                print(
+                    f"ERROR in log_tool_call_threadsafe: {e}",
+                    file=sys.stderr, flush=True,
+                )
+
+        threading.Thread(target=_run, daemon=True).start()
+
     async def log_llm_thinking(
         self, conversation_id: str, orchestrator_model: str, total_tokens: Optional[int] = None
     ) -> None:
@@ -220,10 +265,13 @@ class AgentLogger:
             return
 
         try:
-            # Get cached values
-            user_id = "unknown"
+            # Get cached values populated by log_user_request
+            user_id = self._user_id_cache.get(conversation_id, "unknown")
             session_turn = self._turn_counter.get(conversation_id, 0)
             user_prompt = self._user_prompt_cache.get(conversation_id, "")
+            # Fall back to cached model if caller passes empty string
+            if not orchestrator_model:
+                orchestrator_model = self._orchestrator_model_cache.get(conversation_id, "")
 
             row = {
                 "logged_at": datetime.utcnow(),
@@ -309,6 +357,8 @@ class AgentLogger:
             # Clean up in-memory state
             self._request_start.pop(conversation_id, None)
             self._user_prompt_cache.pop(conversation_id, None)
+            self._user_id_cache.pop(conversation_id, None)
+            self._orchestrator_model_cache.pop(conversation_id, None)
             # Note: _turn_counter is NOT cleaned up — it accumulates across turns
 
         except Exception as e:
@@ -327,7 +377,9 @@ class AgentLogger:
         try:
             if not self.debug_warehouse_id:
                 print(
-                    f"WARNING: DEBUG_WAREHOUSE_ID not set; log row not inserted: {row}"
+                    f"WARNING: DEBUG_WAREHOUSE_ID not set; log row not inserted: {row}",
+                    file=sys.stderr,
+                    flush=True,
                 )
                 return
 
@@ -355,18 +407,21 @@ class AgentLogger:
             values_str = ", ".join(values)
             sql = f"INSERT INTO {self.debug_log_table} ({columns_str}) VALUES ({values_str})"
 
-            # Execute asynchronously using statement_execution
+            # Run the synchronous SDK call in a worker thread so it does NOT
+            # block the asyncio event loop. This keeps streaming chunks flowing
+            # smoothly even while multiple log rows are being inserted.
             try:
-                self.workspace_client.statement_execution.execute_statement(
+                await asyncio.to_thread(
+                    self.workspace_client.statement_execution.execute_statement,
                     warehouse_id=self.debug_warehouse_id,
                     statement=sql,
                     wait_timeout="10s",
                 )
             except Exception as e:
-                # Print to stdout but don't raise
-                print(f"ERROR: Failed to insert log row: {e}")
-                print(f"SQL: {sql}")
+                # Print to stderr but don't raise
+                print(f"ERROR: Failed to insert log row: {e}", file=sys.stderr, flush=True)
+                print(f"SQL: {sql}", file=sys.stderr, flush=True)
 
         except Exception as e:
-            # Catch any other exceptions and print to stdout
-            print(f"ERROR in _insert: {e}")
+            # Catch any other exceptions and print to stderr
+            print(f"ERROR in _insert: {e}", file=sys.stderr, flush=True)

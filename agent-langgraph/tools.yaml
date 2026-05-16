@@ -1,0 +1,147 @@
+# =============================================================================
+# Agent tool definitions
+# -----------------------------------------------------------------------------
+# Each entry below becomes a langchain @tool that the agent can call. The LLM
+# reads `description` to decide *when* to call each tool — write descriptions
+# carefully and unambiguously, including example questions.
+#
+# Adding a new tool that uses an EXISTING backend (genie, vector_search, ...):
+#   → Add a new entry below. Restart the backend. Done.
+#
+# Adding a new tool that needs a NEW backend (e.g., first time wiring Power BI):
+#   1. Create agent_server/backends/<name>.py with a `call(...)` function.
+#   2. Register it in agent_server/tool_registry.BACKEND_HANDLERS.
+#   3. Add YAML entries with `backend: <name>`. Restart.
+#
+# `${ENV_VAR}` references are substituted from environment variables at load
+# time. Tools whose params reference a missing env var are skipped with a
+# warning at startup (the LLM never sees them) — safe to commit YAML
+# entries before the matching env vars exist.
+# =============================================================================
+
+tools:
+
+  # ---------------------------------------------------------------------------
+  # Flights — structured flight operations data via Genie
+  # ---------------------------------------------------------------------------
+  - name: query_flights_genie
+    backend: genie
+    description: |
+      Answer questions about FLIGHT operations data (operations, schedules,
+      delays, durations, tail numbers, routes) backed by the
+      slf_srvc.test_db.reporting_flight Delta table via Genie.
+      Use for: row counts, aggregates, trends, "how many", "show me",
+      "what is the average" type questions about flights.
+      Returns JSON: {text, sql, dataframe_records, conversation_id}.
+    params:
+      space_id: ${GENIE_SPACE_ID}
+      activity_label: "Call Genie"
+
+  # ---------------------------------------------------------------------------
+  # Per-domain context search (one shared Vector index, scoped via filters_json)
+  # ---------------------------------------------------------------------------
+  # We use ONE Delta-Sync vector index (slf_srvc.test_db.vector_db_knowledge_index)
+  # whose source table has a `domain` column. Each search_*_context tool below
+  # filters to its own domain via `filters_json: '{"domain": "<name>"}'` so the
+  # LLM only sees context relevant to that domain.
+  #
+  # To add a new domain (e.g. salesforce, hr_policies):
+  #   1. INSERT INTO slf_srvc.test_db.vector_db_knowledge with domain='<new>'
+  #   2. Add a `search_<new>_context` entry below with the matching filter
+  #   3. Restart backend
+  # ---------------------------------------------------------------------------
+
+  - name: search_flights_context
+    backend: vector_search
+    description: |
+      Search FLIGHT operations documentation — column definitions, business
+      rules, and query patterns for the slf_srvc.test_db.reporting_flight
+      table. Always call this BEFORE query_flights_genie for any flight
+      data question so that Genie receives enriched context and produces
+      more accurate SQL.
+      Use for: "what does <flight column> mean", flight-data definitions,
+      flight metric / KPI definitions, flight business rules, time-column
+      guidance, cancellation logic, delay-band definitions.
+    params:
+      index_name: ${VECTOR_SEARCH_INDEX_NAME}
+      columns: ["chunk_id", "text"]
+      num_results: 3
+      filters_json: '{"domain": "flights"}'
+      activity_label: "Call Vector DB"
+
+  # Finance context — uncomment after you've added domain='finance' rows to
+  # slf_srvc.test_db.vector_db_knowledge.
+  #
+  # - name: search_finance_context
+  #   backend: vector_search
+  #   description: |
+  #     Search FINANCIAL documentation — chart of accounts, P&L line
+  #     definitions, revenue recognition rules, GL terminology. Always call
+  #     BEFORE query_finance_genie so finance Genie receives enriched context.
+  #     Use for: accounting terms, financial KPI definitions, "what is GAAP X".
+  #   params:
+  #     index_name: ${VECTOR_SEARCH_INDEX_NAME}
+  #     columns: ["chunk_id", "text"]
+  #     num_results: 3
+  #     filters_json: '{"domain": "finance"}'
+  #     activity_label: "Call Vector DB"
+
+  # Marketing context — uncomment after you've added domain='marketing' rows.
+  #
+  # - name: search_marketing_context
+  #   backend: vector_search
+  #   description: |
+  #     Search MARKETING documentation — campaign types, lead source codes,
+  #     funnel stage definitions, MQL/SQL criteria, attribution rules.
+  #     Use for: marketing term lookups, campaign / lead / funnel definitions.
+  #   params:
+  #     index_name: ${VECTOR_SEARCH_INDEX_NAME}
+  #     columns: ["chunk_id", "text"]
+  #     num_results: 3
+  #     filters_json: '{"domain": "marketing"}'
+  #     activity_label: "Call Vector DB"
+
+  # ---------------------------------------------------------------------------
+  # Examples below are placeholders — they use `backend: stub` so they appear
+  # to the LLM as available tools that simply return "not yet implemented".
+  # When you wire the real backend, change `backend:` to the implemented one.
+  # ---------------------------------------------------------------------------
+
+  # Finance — second Genie space example. Uncomment + add FINANCE_GENIE_SPACE_ID
+  # to .env when ready. Until then it's auto-skipped at startup.
+  #
+  # - name: query_finance_genie
+  #   backend: genie
+  #   description: |
+  #     Answer questions about FINANCIAL data (revenue, expenses, P&L, GL
+  #     entries, budgets, accounts) via Genie. Use for accounting / finance
+  #     questions about ledger and reporting figures.
+  #   params:
+  #     space_id: ${FINANCE_GENIE_SPACE_ID}
+  #     activity_label: "Call Genie"
+
+  # Marketing — Power BI example. Backend not yet implemented (`stub`).
+  #
+  # - name: query_marketing_powerbi
+  #   backend: stub
+  #   description: |
+  #     Answer questions about MARKETING campaign performance, leads,
+  #     conversion funnels, attribution — backed by Power BI semantic models.
+  #     Use when the user asks about campaigns, MQLs, lead sources, or
+  #     marketing KPIs.
+  #   params:
+  #     workspace_id: ${POWERBI_WORKSPACE_ID}
+  #     dataset_id: ${POWERBI_MARKETING_DATASET_ID}
+
+  # SharePoint — document search example. Backend not yet implemented.
+  #
+  # - name: search_sharepoint
+  #   backend: stub
+  #   description: |
+  #     Search SharePoint document libraries for company POLICIES, internal
+  #     procedures, training materials, and other unstructured documents.
+  #     Use when the user asks "where is the policy on...", "show me the
+  #     onboarding doc", "what does our travel policy say about X".
+  #   params:
+  #     site_url: ${SHAREPOINT_SITE_URL}
+  #     library: "Documents"
