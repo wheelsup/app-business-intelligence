@@ -62,6 +62,7 @@ resources:
         # Keep the id here in sync with GENIE_SPACE_ID in the env block above.
         - name: 'flights_genie'
           genie_space:
+            name: 'Flights'
             space_id: '01f148039e131b10b43b6f97295e52e7'
             permission: 'CAN_RUN'
         # Vector index backing search_flights_context (see tools.yaml).
