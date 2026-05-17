@@ -78,13 +78,16 @@ targets:
   dev:
     mode: development
     default: true
-    # workspace:
-    #   host: https://...
+    workspace:
+      host: https://adb-1036804910847582.2.azuredatabricks.net
 
   prod:
     mode: production
-    # workspace:
-    #   host: https://...
+    # NOTE: until a separate production workspace exists, prod deploys to
+    # the same workspace as dev. Change `host:` below when a real prod
+    # workspace is provisioned.
+    workspace:
+      host: https://adb-1036804910847582.2.azuredatabricks.net
     resources:
       apps:
         agent_langgraph:
