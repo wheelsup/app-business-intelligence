@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime
 from typing import Any, Dict, Tuple
 
@@ -35,6 +36,7 @@ def call(
     """
     space_id = params.get("space_id")
     activity_label = params.get("activity_label", "Call Genie")
+    connected_table = os.getenv("CONNECTED_TABLE", "")
 
     if not space_id:
         # Should not happen — tool_registry skips tools with missing required
@@ -59,6 +61,15 @@ def call(
     except Exception as e:
         duration_ms = int((datetime.now() - start).total_seconds() * 1000)
         logger.error("Genie call failed: %s", e, exc_info=True)
+        error_payload = json.dumps({
+            "backend": "genie",
+            "space_id": space_id,
+            "connected_table": connected_table,
+            "conversation_id": conversation_id,
+            "question": question,
+            "error": str(e),
+            "error_type": type(e).__name__,
+        })
         agent_logger.log_tool_call_threadsafe(
             conversation_id=session_id,
             activity=activity_label,
@@ -67,6 +78,7 @@ def call(
             duration_ms=duration_ms,
             status="error",
             error_message=str(e),
+            raw_payload=error_payload,
         )
         return json.dumps({
             "text": f"Genie error: {e}",
@@ -141,6 +153,9 @@ def call(
         )
 
     result_json: Dict[str, Any] = {
+        "backend": "genie",
+        "space_id": space_id,
+        "connected_table": connected_table,
         "text": result_text,
         "sql": result_sql,
         "dataframe_records": result_records,

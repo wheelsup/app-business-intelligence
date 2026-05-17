@@ -30,6 +30,9 @@ tools:
       Answer questions about FLIGHT operations data (operations, schedules,
       delays, durations, tail numbers, routes) backed by the
       slf_srvc.test_db.reporting_flight Delta table via Genie.
+      For flight questions, use this only after search_flights_context has
+      returned the relevant business rules or query pattern. Include that
+      retrieved context in the question you send to Genie.
       Use for: row counts, aggregates, trends, "how many", "show me",
       "what is the average" type questions about flights.
       Returns JSON: {text, sql, dataframe_records, conversation_id}.
@@ -59,6 +62,8 @@ tools:
       table. Always call this BEFORE query_flights_genie for any flight
       data question so that Genie receives enriched context and produces
       more accurate SQL.
+      Return values include retrieved_ids and similarity_scores; keep those
+      citations in mind when producing the final answer.
       Use for: "what does <flight column> mean", flight-data definitions,
       flight metric / KPI definitions, flight business rules, time-column
       guidance, cancellation logic, delay-band definitions.

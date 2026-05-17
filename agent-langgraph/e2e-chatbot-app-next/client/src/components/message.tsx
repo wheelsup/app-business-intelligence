@@ -1,4 +1,4 @@
-import React, { memo, useState } from 'react';
+import React, { lazy, memo, Suspense, useState } from 'react';
 import { AnimatedAssistantIcon } from './animation-assistant-icon';
 import { Response } from './elements/response';
 import { MessageContent } from './elements/message';
@@ -38,6 +38,10 @@ import { MessageOAuthError } from './message-oauth-error';
 import { isCredentialErrorMessage } from '@/lib/oauth-error-utils';
 import { Streamdown } from 'streamdown';
 import { useApproval } from '@/hooks/use-approval';
+
+const ChartPart = lazy(() =>
+  import('./elements/chart').then((module) => ({ default: module.ChartPart })),
+);
 
 const PurePreviewMessage = ({
   message,
@@ -362,6 +366,24 @@ const PurePreviewMessage = ({
                   setMessages={setMessages}
                   sendMessage={sendMessage}
                 />
+              );
+            }
+
+            if (type === 'data-chart') {
+              return (
+                <Suspense
+                  fallback={
+                    <div
+                      className="not-prose h-80 w-full rounded-xl border bg-card p-4 text-muted-foreground text-sm"
+                      key={key}
+                    >
+                      Loading chart...
+                    </div>
+                  }
+                  key={key}
+                >
+                  <ChartPart chart={part.data} />
+                </Suspense>
               );
             }
           })}

@@ -58,6 +58,9 @@ class AgentLogger:
             "DEBUG_LOG_TABLE", "slf_srvc.test_db.agent_debug_log"
         )
         self.debug_warehouse_id = os.getenv("DEBUG_WAREHOUSE_ID", "")
+        self.vector_low_similarity_threshold = float(
+            os.getenv("VECTOR_LOW_SIMILARITY_THRESHOLD", "0.70")
+        )
 
         # In-memory state
         self._turn_counter: Dict[str, int] = {}
@@ -68,6 +71,8 @@ class AgentLogger:
         # to "unknown".
         self._user_id_cache: Dict[str, str] = {}
         self._orchestrator_model_cache: Dict[str, str] = {}
+        self._trace_id_cache: Dict[str, str] = {}
+        self._turn_context_cache: Dict[str, Dict[str, Any]] = {}
 
         logger.info(
             "AgentLogger initialized: level=%s, table=%s",
@@ -81,6 +86,11 @@ class AgentLogger:
             file=sys.stderr,
             flush=True,
         )
+
+    def set_trace_id(self, conversation_id: str, trace_id: Optional[str]) -> None:
+        """Attach the current MLflow trace id to later SQL debug rows."""
+        if conversation_id and trace_id:
+            self._trace_id_cache[conversation_id] = trace_id
 
     def _is_enabled(self, min_level: str) -> bool:
         """
@@ -148,6 +158,8 @@ class AgentLogger:
                 "raw_payload": None,
                 "retrieved_ids": None,
                 "similarity_scores": None,
+                "trace_id": self._trace_id_cache.get(conversation_id),
+                "failure_category": "none",
             }
 
             await self._insert(row)
@@ -195,6 +207,20 @@ class AgentLogger:
             orchestrator_model = self._orchestrator_model_cache.get(conversation_id, "unknown")
             session_turn = self._turn_counter.get(conversation_id, 0)
             user_prompt = self._user_prompt_cache.get(conversation_id, "")
+            failure_category = self._infer_failure_category(
+                activity=activity,
+                status=status,
+                error_message=error_message,
+                retrieved_ids=retrieved_ids,
+                similarity_scores=similarity_scores,
+            )
+            self._update_turn_context_from_tool_call(
+                conversation_id=conversation_id,
+                activity=activity,
+                raw_payload=raw_payload,
+                retrieved_ids=retrieved_ids,
+                similarity_scores=similarity_scores,
+            )
 
             row = {
                 "logged_at": datetime.utcnow(),
@@ -212,6 +238,8 @@ class AgentLogger:
                 "raw_payload": raw_payload,
                 "retrieved_ids": retrieved_ids,
                 "similarity_scores": similarity_scores,
+                "trace_id": self._trace_id_cache.get(conversation_id),
+                "failure_category": failure_category,
             }
 
             await self._insert(row)
@@ -289,6 +317,8 @@ class AgentLogger:
                 "raw_payload": None,
                 "retrieved_ids": None,
                 "similarity_scores": None,
+                "trace_id": self._trace_id_cache.get(conversation_id),
+                "failure_category": "none",
             }
 
             await self._insert(row)
@@ -333,6 +363,7 @@ class AgentLogger:
 
             session_turn = self._turn_counter.get(conversation_id, 0)
             user_prompt = self._user_prompt_cache.get(conversation_id, "")
+            raw_payload = self._build_final_response_raw_payload(conversation_id)
 
             row = {
                 "logged_at": datetime.utcnow(),
@@ -347,9 +378,15 @@ class AgentLogger:
                 "total_tokens": total_tokens,
                 "status": status,
                 "error_message": error_message,
-                "raw_payload": None,
+                "raw_payload": raw_payload,
                 "retrieved_ids": None,
                 "similarity_scores": None,
+                "trace_id": self._trace_id_cache.get(conversation_id),
+                "failure_category": self._infer_failure_category(
+                    activity="Final Response",
+                    status=status,
+                    error_message=error_message,
+                ),
             }
 
             await self._insert(row)
@@ -359,10 +396,88 @@ class AgentLogger:
             self._user_prompt_cache.pop(conversation_id, None)
             self._user_id_cache.pop(conversation_id, None)
             self._orchestrator_model_cache.pop(conversation_id, None)
+            self._trace_id_cache.pop(conversation_id, None)
+            self._turn_context_cache.pop(conversation_id, None)
             # Note: _turn_counter is NOT cleaned up — it accumulates across turns
 
         except Exception as e:
             logger.error("Error in log_final_response: %s", e, exc_info=True)
+
+    def _infer_failure_category(
+        self,
+        *,
+        activity: str,
+        status: str,
+        error_message: Optional[str] = None,
+        retrieved_ids: Optional[str] = None,
+        similarity_scores: Optional[str] = None,
+    ) -> str:
+        if status != "success":
+            message = (error_message or "").lower()
+            if "not authorized" in message or "permission" in message:
+                return "permission_failure"
+            if activity == "Call Vector DB":
+                return "retrieval_failure"
+            if activity == "Call Genie":
+                return "genie_sql_failure"
+            if activity == "Final Response":
+                return "final_answer_failure"
+            return "runtime_error"
+
+        if activity == "Call Vector DB":
+            ids = self._json_loads_safely(retrieved_ids, [])
+            scores = self._json_loads_safely(similarity_scores, [])
+            if not ids:
+                return "retrieval_failure"
+            if scores:
+                try:
+                    if float(scores[0]) < self.vector_low_similarity_threshold:
+                        return "low_similarity"
+                except (TypeError, ValueError):
+                    return "low_similarity"
+        return "none"
+
+    def _update_turn_context_from_tool_call(
+        self,
+        *,
+        conversation_id: str,
+        activity: str,
+        raw_payload: Optional[str],
+        retrieved_ids: Optional[str],
+        similarity_scores: Optional[str],
+    ) -> None:
+        turn_context = self._turn_context_cache.setdefault(conversation_id, {})
+        if activity == "Call Vector DB":
+            payload = self._json_loads_safely(raw_payload, {})
+            turn_context["vector"] = {
+                "retrieved_ids": self._json_loads_safely(retrieved_ids, []),
+                "similarity_scores": self._json_loads_safely(similarity_scores, []),
+                "raw_payload": payload,
+            }
+        elif activity == "Call Genie":
+            turn_context["genie"] = self._json_loads_safely(raw_payload, {})
+
+    def _build_final_response_raw_payload(self, conversation_id: str) -> Optional[str]:
+        turn_context = self._turn_context_cache.get(conversation_id)
+        if not turn_context:
+            return None
+        return json.dumps(
+            {
+                "trace_id": self._trace_id_cache.get(conversation_id),
+                "retrieval": turn_context.get("vector"),
+                "genie": turn_context.get("genie"),
+            },
+            default=str,
+        )
+
+    @staticmethod
+    def _json_loads_safely(value: Optional[str], default: Any) -> Any:
+        if not value:
+            return default
+        try:
+            return json.loads(value)
+        except Exception:
+            return default
 
     async def _insert(self, row: Dict[str, Any]) -> None:
         """
@@ -391,8 +506,8 @@ class AgentLogger:
                 if value is None:
                     values.append("NULL")
                 elif isinstance(value, str):
-                    # Escape single quotes
-                    escaped = value.replace("'", "''")
+                    # Preserve JSON escapes/newlines when embedding into SQL.
+                    escaped = value.replace("\\", "\\\\").replace("'", "''")
                     values.append(f"'{escaped}'")
                 elif isinstance(value, datetime):
                     # Format datetime as ISO string

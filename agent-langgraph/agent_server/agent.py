@@ -53,6 +53,16 @@ _current_session_id: ContextVar[str] = ContextVar(
 )
 
 
+def _get_current_mlflow_trace_id() -> Optional[str]:
+    try:
+        span = mlflow.get_current_active_span()
+        if span is None:
+            return None
+        return getattr(span, "trace_id", None) or getattr(span, "request_id", None)
+    except Exception:
+        return None
+
+
 @tool
 def get_current_time() -> str:
     """Get the current date and time."""
@@ -83,7 +93,12 @@ SYSTEM_PROMPT = (
     "you cannot help with that request — do NOT invent, guess, or "
     "fabricate data. "
     "Never bypass the tools by writing or executing SQL directly, calling "
-    "external APIs, or accessing data systems outside the provided tools."
+    "external APIs, or accessing data systems outside the provided tools. "
+    "For flight data questions, always call search_flights_context first, "
+    "wait for its result, use the retrieved business context to refine the "
+    "question, then call query_flights_genie. Do not call these two flight "
+    "tools in parallel. Answer only from the retrieved context and Genie "
+    "result, and mention when the available data is not enough."
 )
 
 
@@ -147,9 +162,23 @@ async def stream_handler(
                 user_prompt = _extract_text(msg_dict.get("content"))
                 if user_prompt:
                     break
+
+    span_cm = None
+    span_error: Optional[BaseException] = None
+    try:
+        span_cm = mlflow.start_span(
+            name="agent_turn",
+            attributes={"conversation_id": session_id, "user_prompt": user_prompt},
+        )
+        span = span_cm.__enter__()
+        trace_id = getattr(span, "trace_id", None) or getattr(span, "request_id", None)
+        agent_logger.set_trace_id(session_id, trace_id)
+    except Exception:
+        span_cm = None
     
     if session_id != "unknown":
         mlflow.update_current_trace(metadata={"mlflow.trace.session": session_id})
+        agent_logger.set_trace_id(session_id, _get_current_mlflow_trace_id())
 
     # Make the session id visible to sync @tool functions (which run in
     # worker threads via LangChain's asyncio.to_thread). Setting on the
@@ -210,6 +239,7 @@ async def stream_handler(
     except Exception as e:
         final_status = "error"
         final_error = str(e)
+        span_error = e
         logger.exception("stream_handler failed: %s", e)
         raise
     finally:
@@ -221,3 +251,8 @@ async def stream_handler(
             error_message=final_error,
             total_tokens=turn_stats.get("total_tokens"),
         )
+        if span_cm is not None:
+            if span_error is not None:
+                span_cm.__exit__(type(span_error), span_error, span_error.__traceback__)
+            else:
+                span_cm.__exit__(None, None, None)

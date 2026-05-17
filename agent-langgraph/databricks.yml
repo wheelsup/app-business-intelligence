@@ -36,6 +36,8 @@ resources:
             value: "24062e246b5e17bf"                   # SQL warehouse used for log inserts
           - name: VECTOR_SEARCH_INDEX_NAME
             value: "slf_srvc.test_db.vector_db_knowledge_index"
+          - name: VECTOR_LOW_SIMILARITY_THRESHOLD
+            value: "0.70"
 
       # Resources which this app has access to
       resources:
@@ -46,6 +48,11 @@ resources:
         - name: 'agent_debug_log'
           uc_securable:
             securable_full_name: 'slf_srvc.test_db.agent_debug_log'
+            securable_type: 'TABLE'
+            permission: 'MODIFY'
+        - name: 'agent_eval_cases'
+          uc_securable:
+            securable_full_name: 'slf_srvc.test_db.agent_eval_cases'
             securable_type: 'TABLE'
             permission: 'MODIFY'
         # Warehouse used by agent_logger to INSERT conversation log rows.

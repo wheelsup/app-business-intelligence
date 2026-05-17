@@ -57,6 +57,10 @@ def call(
             filters_json = json.dumps(raw_filters)
         except Exception:
             filters_json = None
+    try:
+        filters_payload = json.loads(filters_json) if filters_json else None
+    except Exception:
+        filters_payload = filters_json
 
     if not index_name:
         # Should not happen — tool_registry skips tools with missing required
@@ -114,6 +118,18 @@ def call(
             retrieved_ids, similarity_scores,
         )
 
+        raw_payload = {
+            "backend": "vector_search",
+            "index_name": index_name,
+            "query_text": question,
+            "requested_columns": columns,
+            "num_results": num_results,
+            "filters": filters_payload,
+            "retrieved_ids": retrieved_ids,
+            "similarity_scores": similarity_scores,
+            "response": response.as_dict(),
+        }
+
         agent_logger.log_tool_call_threadsafe(
             conversation_id=session_id,
             activity=activity_label,
@@ -121,7 +137,7 @@ def call(
             response="\n".join(context_pieces)[:2000],
             duration_ms=duration_ms,
             status="success",
-            raw_payload=json.dumps(response.as_dict()),
+            raw_payload=json.dumps(raw_payload),
             retrieved_ids=json.dumps(retrieved_ids),
             similarity_scores=json.dumps(similarity_scores),
         )
@@ -143,7 +159,7 @@ def call(
             "requested_columns": columns,
             "query_text": question,
             "num_results": num_results,
-            "filters_json": filters_json,
+            "filters": filters_payload,
         })
         agent_logger.log_tool_call_threadsafe(
             conversation_id=session_id,
