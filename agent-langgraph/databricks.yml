@@ -47,7 +47,7 @@ resources:
           uc_securable:
             securable_full_name: 'slf_srvc.test_db.agent_debug_log'
             securable_type: 'TABLE'
-            permission: 'ALL_PRIVILEGES'
+            permission: 'MODIFY'
         # Warehouse used by agent_logger to INSERT conversation log rows.
         # Without this grant the SP cannot execute statements against the
         # warehouse and every log insert silently fails with a permission
@@ -62,7 +62,7 @@ resources:
         # Keep the id here in sync with GENIE_SPACE_ID in the env block above.
         - name: 'flights_genie'
           genie_space:
-            space_id: '01f148039e131b10b43b6f97295e52e7'
+            id: '01f148039e131b10b43b6f97295e52e7'
             permission: 'CAN_RUN'
         # Vector index backing search_flights_context (see tools.yaml).
         # Vector indexes are uc_securable of type TABLE; SELECT is sufficient
@@ -71,6 +71,26 @@ resources:
         - name: 'vector_db_knowledge_index'
           uc_securable:
             securable_full_name: 'slf_srvc.test_db.vector_db_knowledge_index'
+            securable_type: 'TABLE'
+            permission: 'SELECT'
+        # Underlying fact table that Genie queries on the agent's behalf.
+        # `flights_genie` (CAN_RUN) lets the SP call the Genie space, but
+        # the SP also needs SELECT on the data the Genie space queries —
+        # otherwise Genie returns MessageStatus.FAILED with no clear cause.
+        # Keep in sync with CONNECTED_TABLE in the env block above.
+        - name: 'reporting_flight'
+          uc_securable:
+            securable_full_name: 'slf_srvc.test_db.reporting_flight'
+            securable_type: 'TABLE'
+            permission: 'SELECT'
+        # Source table for the vector index. Vector Search filter
+        # expressions (e.g. filters_json={"domain":"flights"}) enforce
+        # row-level access against this source table — without SELECT here,
+        # filtered queries return zero rows even though the index permission
+        # itself is granted.
+        - name: 'vector_db_knowledge_source'
+          uc_securable:
+            securable_full_name: 'slf_srvc.test_db.vector_db_knowledge'
             securable_type: 'TABLE'
             permission: 'SELECT'
 
